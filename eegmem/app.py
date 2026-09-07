@@ -1,113 +1,99 @@
-"""第 6 步：助手（App）——一条命令串起全流程。
-
-用法：
-  python -m eegmem.app           处理所有尚未入档的新批次
-  python -m eegmem.app batch_05  只处理指定批次
-  python -m eegmem.app --reset   先清空记忆（回到冷启动）再处理
-  python -m eegmem.app stats     只看记忆库现状
-
-关键设计：助手靠记忆库判断"哪些批次已经处理过"，
-重复运行不会重复入档——它记得自己做过什么，重启也不会忘。
-这正是这个项目立项的初衷：给脑电分析加一层跨会话、不会遗忘的记忆。
-"""
+"""Command line entry point for preparation, training, analysis and evaluation."""
 import argparse
+import hashlib
+import json
+from contextlib import closing
 from pathlib import Path
 
 import joblib
 
-from eegmem.analyze import CALIBRATION_BATCHES, MODEL_PATH
-from eegmem.compare import BATCH_DIR, run_batch
-from eegmem.memory import class_stats, clear_db, create_db, load_all
-from eegmem.report import REPORT_DIR, render_memory_evidence, render_report
+from eegmem.analyze import analyze_batch, train_model
+from eegmem.compare import compare_batch
+from eegmem.memory import create_db, load_all, save_batch
+from eegmem.pipeline import PROJECT_ROOT, TRAIN_SUBJECTS, TEST_SUBJECTS, prepare, evaluate, subject_paths
+from eegmem.report import write_report
 
 
-def processed_batches(conn):
-    """记忆库里已经入过档的批次名集合。"""
-    rows = conn.execute("SELECT DISTINCT batch FROM states").fetchall()
-    return {r[0] for r in rows}
+def file_digest(path):
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
-def process_batch(conn, path, model):
-    """处理一个新批次：分析 → 与记忆比较 → 写入记忆 → 出报告。
-
-    已经入过档的批次直接跳过（记忆的幂等性）。
-    """
-    if path.stem in processed_batches(conn):
-        return None
-    evidence = render_memory_evidence(conn)      # 写入前的记忆证据
-    results = run_batch(conn, path, model)       # 比较并写入
-    text = render_report(path.stem, results) + "\n" + evidence
-    out = REPORT_DIR / f"{path.stem}_report.md"
-    out.write_text(text, encoding="utf-8")
-    return out
-
-
-def new_batches():
-    """按顺序返回所有"新信号"批次（标定批次除外）。"""
-    return [p for p in sorted(BATCH_DIR.glob("batch_*.npz"))
-            if p.stem not in CALIBRATION_BATCHES]
-
-
-def show_stats(conn):
-    total = len(load_all(conn))
-    done = sorted(processed_batches(conn))
-    print(f"记忆库共 {total} 条记录；已入档批次: {done}")
-    print("  左手想象:", class_stats(conn, 0))
-    print("  右手想象:", class_stats(conn, 1))
+def process_batch(conn, path, artifact, report_dir):
+    """Recreate reports on repeat runs; reject changed files under an existing ID."""
+    digest = file_digest(path)
+    previous = conn.execute('SELECT * FROM batches WHERE name=?', (path.stem,)).fetchone()
+    if previous:
+        if previous['digest'] != digest:
+            raise ValueError(f'{path.stem}: batch contents changed; use a new batch ID')
+        results, evidence = json.loads(previous['results']), json.loads(previous['evidence'])
+        added = False
+    else:
+        duplicate = conn.execute('SELECT name FROM batches WHERE digest=?', (digest,)).fetchone()
+        if duplicate:
+            raise ValueError(f'Batch content already recorded as {duplicate[0]}')
+        if path.stem in artifact['training_batches'] or digest in artifact['training_digests']:
+            raise ValueError('Training batches cannot be analyzed as new observations')
+        trials = analyze_batch(path, artifact)
+        results, evidence = compare_batch(load_all(conn), trials)
+        save_batch(conn, path.stem, digest, results, evidence)
+        added = True
+    report = write_report(report_dir, path.stem, results, evidence)
+    return report, added
 
 
 def main():
-    parser = argparse.ArgumentParser(description="EEG 状态记忆助手")
-    parser.add_argument("batch", nargs="?", help="只处理指定批次，如 batch_05")
-    parser.add_argument("--reset", action="store_true",
-                        help="先清空记忆库（冷启动）")
-    parser.add_argument("--stats", action="store_true", help="只看记忆库现状")
+    parser = argparse.ArgumentParser(description='EEG State Memory Assistant')
+    parser.add_argument('--root', type=Path, default=PROJECT_ROOT,
+                        help='Project output root, including data, models and reports')
+    commands = parser.add_subparsers(dest='command', required=True)
+    commands.add_parser('prepare', help='Download and preprocess subjects 1-10')
+    commands.add_parser('train', help='Train on subjects 1-4 and save a frozen model')
+    run = commands.add_parser('run', help='Analyze subjects 5-10 or one NPZ batch')
+    run.add_argument('batch', nargs='?', type=Path)
+    run.add_argument('--database', type=Path, help='Separate memory database for a new experiment')
+    stats = commands.add_parser('stats', help='Show persistent memory counts')
+    stats.add_argument('--database', type=Path)
+    commands.add_parser('evaluate', help='Reproduce metrics and figure using isolated memory')
     args = parser.parse_args()
-
-    conn = create_db()
-    if args.reset:
-        clear_db(conn)
-        print("记忆库已清空，回到冷启动。\n")
-
-    if args.stats or args.batch == "stats":
-        show_stats(conn)
-        return
-
-    if not MODEL_PATH.exists():
-        raise SystemExit("还没有先验模型：请先运行 analyze.py 完成标定")
-    model = joblib.load(MODEL_PATH)
-    REPORT_DIR.mkdir(exist_ok=True)
-
-    if args.batch:
-        path = BATCH_DIR / f"{args.batch}.npz"
-        if not path.exists():
-            raise SystemExit(f"批次不存在：{path}")
-        out = process_batch(conn, path, model)
-        if out:
-            print(f"{args.batch}: 已处理，报告 -> {out}")
+    root = args.root.resolve()
+    model_path = root / 'models' / 'assistant.joblib'
+    database = getattr(args, 'database', None) or root / 'data' / 'assistant.sqlite3'
+    try:
+        if args.command == 'prepare':
+            prepare(root)
+        elif args.command == 'train':
+            paths = subject_paths(root, TRAIN_SUBJECTS)
+            artifact = train_model(paths)
+            artifact['training_digests'] = [file_digest(path) for path in paths]
+            model_path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = model_path.with_suffix('.joblib.tmp')
+            joblib.dump(artifact, temporary)
+            temporary.replace(model_path)
+            print(f"Saved model trained on {artifact['training_trials']} trials: {model_path}")
+        elif args.command == 'evaluate':
+            evaluate(root)
+        elif args.command == 'stats':
+            if not database.exists():
+                print('No memory yet. Run train, then run.')
+                return
+            with closing(create_db(database)) as conn:
+                batches = conn.execute('SELECT COUNT(*) FROM batches').fetchone()[0]
+                rows = load_all(conn)
+                print(f'{len(rows)} trials in {batches} batches')
+                for label, name in enumerate(['Left', 'Right']):
+                    print(f'{name} predictions: {sum(r["pred"] == label for r in rows)}')
         else:
-            print(f"{args.batch}: 已在记忆中，跳过（想重来可用 --reset）")
-        return
-
-    done, skipped = [], 0
-    for path in new_batches():
-        out = process_batch(conn, path, model)
-        if out:
-            done.append(out)
-        else:
-            skipped += 1
-    for out in done:
-        print("新报告:", out)
-    if done:
-        print(f"\n本轮处理 {len(done)} 个新批次；跳过已入档 {skipped} 个。")
-    elif skipped:
-        print("所有批次都已入档，没有新信号。\n"
-              "——助手记得自己处理过什么；想重新演示请用 --reset。")
-    else:
-        print("没有可处理的批次。")
-    show_stats(conn)
-    conn.close()
+            if not model_path.exists():
+                raise ValueError('Model not found. Run train first.')
+            paths = [args.batch.resolve()] if args.batch else subject_paths(root, TEST_SUBJECTS)
+            artifact = joblib.load(model_path)
+            with closing(create_db(database, file_digest(model_path))) as conn:
+                for path in paths:
+                    report, added = process_batch(conn, path, artifact, root / 'reports' / database.stem)
+                    print(f'{"Recorded" if added else "Already recorded"}: {path.stem} -> {report}')
+    except (ValueError, FileNotFoundError, KeyError) as error:
+        parser.exit(1, f'Error: {error}\n')
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()

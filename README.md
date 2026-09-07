@@ -1,132 +1,145 @@
 # EEG State Memory Assistant
 
-A memory-augmented assistant for EEG state recording and analysis. Every newly
-arriving batch of signals goes through four stages: analyze, compare against a
-persistent memory bank, write a report with meaning and suggestions, then grow
-the memory by one batch.
+A research prototype that classifies left- and right-hand motor imagery, compares
+new EEG batches with earlier predictions, and saves an evidence report. The
+classifier stays fixed after training. A separate SQLite database retains records
+across restarts.
 
-## Why this project exists
+## Run the project
 
-Two problems shaped the design.
-
-Language agents forget a conversation once the session ends. The standard fix
-is an external log the agent reads when a new session starts. This project
-applies the same idea to EEG analysis. The classifier gets an external,
-persistent memory bank.
-
-A single batch of data produces one isolated result. Statistically that is
-n=1, which is not evidence. The memory bank accumulates every detection, so
-the sample size grows with use and the conclusions get stronger.
-
-## Architecture
-
-```
-new batch -> feature extraction -> state recognition -> memory comparison -> report -> memory +1
-```
-
-| Module | File | Job |
-| --- | --- | --- |
-| Memory bank | eegmem/memory.py | SQLite persistence, queries, per-class statistics |
-| Batch stream | eegmem/batch.py | slice trials into arrival-ordered batches |
-| Analysis | eegmem/analyze.py | bandpower features, frozen logistic regression prior |
-| Comparison | eegmem/compare.py | z-score reference ranges, k-NN, anti-echo gate |
-| Report | eegmem/report.py | Markdown report with meaning, suggestions, uncertainty |
-| Assistant | eegmem/app.py | one-command loop with idempotent memory |
-
-## Quick start
-
-Python 3.12 recommended. Install dependencies with `pip install -r requirements.txt`.
+Use Python 3.12. Run these commands from the repository root:
 
 ```bash
-# single-subject pipeline
-python scripts/01_load.py
-python scripts/03_epochs.py
-python scripts/04_bandpower.py
-
-# memory assistant
-python -m eegmem.analyze
-python -m eegmem.app --reset
-python -m eegmem.app stats
-
-# multi-subject upgrade, downloads about 74 MB from PhysioNet
-python scripts/10_download_subjects.py
-python scripts/11_subject_batches.py
-python scripts/12_run_subjects.py
-python scripts/13_run_subjects_csp.py
-python scripts/14_compare_cross_subject.py
-python scripts/15_memory_curve.py
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements.txt
+python -m eegmem prepare
+python -m eegmem train
+python -m eegmem run
+python -m eegmem stats
+python -m eegmem evaluate
 ```
 
-## Core design
+`prepare` downloads about 74 MB of EDF recordings on first use and creates 30
+batches. `train` uses subjects 1–4. `run` processes subjects 5–10 in subject/run
+order, writes reports, and records each batch once. Repeating `run` restores
+missing reports without duplicating memory. `evaluate` reproduces the metrics
+and figure using an independent model and an in-memory database.
 
-The classifier and the memory bank use different features. The classifier
-needs discriminative features. The memory bank needs comparable features. CSP
-shows why: its spatial patterns are the strongest within one subject, and they
-do not transfer across subjects. The assistant uses all-channel bandpower for
-recognition and keeps C3/C4 bandpower in memory for reference ranges and
-neighbor comparison.
+| Output | Location |
+| --- | --- |
+| Downloaded EDF files and prepared batches | `data/mne_data/`, `data/subjects/` |
+| Frozen model and feature metadata | `models/assistant.joblib` |
+| Persistent records and report evidence | `data/assistant.sqlite3` |
+| Per-batch reports | `reports/assistant/` |
+| Reproducible evaluation | `results/metrics.json`, `figures/memory_growth.png` |
 
-The prior model is frozen after calibration. The memory bank grows with use.
-This is the textbook versus clinical experience split. Retraining the prior on
-memory data would be rewriting the textbook at every patient visit.
+Downloaded data, trained models and individual reports stay local. The aggregate
+evaluation and its figure are included in the repository.
 
-An anti-echo gate disables neighbor voting when one class occupies 70% or more
-of memory. Without the gate a biased classifier would be amplified into false
-consensus.
+## How it works
 
-Uncertainty is reported honestly. Confidence is not reliability. Low
-confidence and insufficient samples are stated explicitly with re-check
-advice. The report supports clinical judgment and does not replace it.
+```text
+EEG run → spectral features → frozen classifier → historical comparison
+                                                     ↓
+                                           SQLite records → report
+```
 
-## Experimental findings
+1. **Prepare signals.** Use subjects 1–10 and imagery runs 4, 8 and 12 from the
+   [PhysioNet EEG Motor Movement/Imagery Dataset](https://physionet.org/content/eegmmidb/1.0.0/).
+   Each recording has 64 channels sampled at 160 Hz. Filter to 7–30 Hz, extract
+   trials from one second before to four seconds after each cue, and subtract
+   the pre-cue mean. No automated artifact rejection is applied.
+2. **Classify.** Compute the natural log of mean multitaper spectral power over
+   8–30 Hz for each channel. Standardize each channel across the complete run.
+   A training-fitted scaler and logistic regression predict left or right imagery.
+   The [MNE multitaper implementation](https://mne.tools/stable/generated/mne.time_frequency.psd_array_multitaper.html)
+   uses length normalization. These features are not baseline-relative ERD measurements.
+3. **Compare.** Keep the standardized C3/C4 features for historical comparisons.
+   For the predicted class, flag a trial if either channel lies more than two
+   historical sample standard deviations from its mean. Require at least five
+   records and nonzero variance. Three nearest historical predictions provide
+   a separate agreement check, disabled for small or strongly imbalanced memory.
+4. **Remember and report.** Every trial in a batch is compared against the same
+   earlier history. Commit the batch and its evidence in one transaction, then
+   render a Markdown report. Low model confidence is reported independently of
+   the reference flag. A model fingerprint prevents mixing incompatible histories.
 
-These results come from running the pipeline, not from tuning stories.
+The classifier uses all channels for prediction; memory comparisons use two
+named channels with a stable interpretation. Historical labels are predictions,
+not verified ground truth. Agreement can repeat a model error and does not
+validate a prediction.
 
-A hand-written rule that picks the side with lower energy was systematically
-left-biased at 39 of 45 trials. It confused a subject-specific channel offset
-with desynchronization.
+## Results
 
-A prior model calibrated on 20 trials reached 0.80 cross-validation accuracy
-and 0.56 at deployment. Its bias flipped direction. Small-sample priors are
-unstable.
+The pilot contains 450 trials from ten subjects. The fixed split trains on 180
+trials from subjects 1–4 and evaluates 270 trials from subjects 5–10.
 
-Mixing six subjects without normalization polluted the memory reference
-ranges. 27% of trials were flagged as anomalies. Session-wise z-scoring cut
-this to 7% while classification accuracy stayed unchanged. The transform is
-invisible to the classifier and critical for the memory.
+| Evaluation | Accuracy |
+| --- | --- |
+| C3/C4 features, five subject-pair folds | 63.1% ± 7.6% |
+| All-channel features, same folds | 62.7% ± 3.2% |
+| All-channel model, fixed split | 64.4%, 174/270 |
 
-CSP reached 64% to 78% within one subject and about 50% across subjects.
-FBCSP scored 0.504 ± 0.080 in leave-two-out cross validation. Spatial
-patterns are individual.
+The five folds hold out pairs 1–2, 3–4, 5–6, 7–8 and 9–10 in turn. Reported spread
+is the standard deviation across folds, not a confidence interval. The fixed
+split and five-fold results reuse this pilot dataset; they are not independent
+confirmation after model selection. Per-subject counts and exact fold scores
+are saved in [results/metrics.json](results/metrics.json).
 
-The deployed model is all-channel bandpower plus logistic regression. It
-scored 0.627 ± 0.032 across five subject-wise folds and 64% on a held-out
-deployment of six subjects.
+![Evaluation as records accumulate](figures/memory_growth.png)
 
-![Memory growth](figures/memory_growth.png)
+The left panel tracks cumulative accuracy of a frozen model. More stored records
+provide more evaluation evidence; they do not retrain or improve the classifier.
+The right panel shows reference flags per incoming run. No fixed false-alarm
+rate is assumed, and a flag does not establish a physiological abnormality.
 
-The left panel shows the cumulative accuracy estimate converging as the
-memory grows. The right panel shows the anomaly rate staying near the
-expected false-alarm level. The memory makes estimates stable. It does not
-make the model magical.
+## Scope and limitations
 
-## Limitations and next steps
+This is complete-run batch analysis, not real-time single-trial decoding. Run
+normalization uses every trial in the incoming run without its labels. It can
+change classification and suppress absolute between-run shifts, so these
+results do not validate online drift detection. Pooling standardized runs also
+does not establish physiological equivalence across people.
 
-The pilot covers 10 of 109 PhysioNet subjects. Cross-subject accuracy around
-63% is near the plateau for subject-independent simple models. Reaching 70%
-or more realistically requires per-subject calibration or transfer methods
-such as Riemannian alignment. The reference-range gate can be upgraded to
-confidence intervals and drift detection.
+Trials within a subject are correlated. Ten subjects are a small pilot, and
+additional trials from the same subjects do not substitute for independent
+participants. Eye and muscle artifacts can remain. Model probabilities are
+uncalibrated. The memory imbalance rule reduces one source of misleading votes
+but cannot eliminate feedback bias. This prototype makes no clinical diagnosis
+and does not identify fatigue or disease.
 
-## Ethics
+## Analyze another batch
 
-This is a research prototype. Its output is auxiliary reference material, not
-medical diagnosis. Clinical decisions belong to qualified personnel using
-complete clinical context. Data comes from the public PhysioNet EEG Motor
-Movement/Imagery Dataset.
+```bash
+python -m eegmem run /path/to/new_run.npz
+```
 
-## Related research
+Use a unique filename for each recording. The NPZ must contain `data` in volts
+with trial/channel/time dimensions, `ch_names` in the training channel order,
+and `sfreq`. Supply preprocessed epochs with the same time window and at least
+two trials. Optional `labels` contain 0 for left imagery and 1 for right imagery;
+without labels, reports omit accuracy. Known training files are rejected.
 
-Continual learning, catastrophic forgetting, memory-augmented agents, and
-retrieval-augmented generation. This project is a memory layer for EEG
-analysis that never forgets and grows with data.
+Changing the contents of an already recorded batch raises an error. A model
+change also requires a separate memory database:
+
+```bash
+python -m eegmem run --database data/new_experiment.sqlite3
+python -m eegmem stats --database data/new_experiment.sqlite3
+```
+
+## Code and checks
+
+| Module | Responsibility |
+| --- | --- |
+| `eegmem/pipeline.py` | Data preparation and isolated evaluation |
+| `eegmem/analyze.py` | Input validation, features, training and prediction |
+| `eegmem/compare.py` | Reference ranges and neighbor agreement |
+| `eegmem/memory.py` | Atomic persistence and model identity |
+| `eegmem/report.py` | Reports from saved evidence |
+| `eegmem/app.py` | Command line workflow |
+
+```bash
+python -m unittest discover -s tests -v
+```
