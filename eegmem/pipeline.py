@@ -4,7 +4,7 @@ import json
 
 import numpy as np
 
-from eegmem.analyze import batch_features, make_model
+from eegmem.analyze import batch_features, load_batch, make_model
 from eegmem.compare import compare_batch
 from eegmem.memory import create_db, load_all, save_batch
 
@@ -57,20 +57,26 @@ def evaluate(root):
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
 
-    cache = {}
+    from experiments.spatial import spatial_models
+
+    cache, raw_cache = {}, {}
     channels = sfreq = None
     for path in subject_paths(root, SUBJECTS):
         x, y, channels, sfreq = batch_features(path, channels, sfreq)
         if y is None:
             raise ValueError('Evaluation requires known labels')
         cache[path.stem] = (x, y)
+        raw_cache[path.stem] = load_batch(path)[0]
     picks = [channels.index(c) for c in ['C3', 'C4']]
 
     def dataset(subjects):
         batches = [cache[p.stem] for p in subject_paths(root, subjects)]
         return np.vstack([x for x, _ in batches]), np.concatenate([y for _, y in batches])
 
-    folds = {'C3/C4': [], 'All channels': []}
+    def raw_dataset(subjects):
+        return np.vstack([raw_cache[p.stem] for p in subject_paths(root, subjects)])
+
+    folds = {'C3/C4': [], 'All channels': [], 'CSP': [], 'FBCSP': []}
     for first in range(1, 11, 2):
         held = [first, first + 1]
         train = [s for s in SUBJECTS if s not in held]
@@ -79,6 +85,10 @@ def evaluate(root):
         for name, indices in [('C3/C4', picks), ('All channels', slice(None))]:
             model = make_model().fit(x_train[:, indices], y_train)
             score = model.score(x_test[:, indices], y_test)
+            folds[name].append(float(score))
+        raw_train, raw_test = raw_dataset(train), raw_dataset(held)
+        for name, model in spatial_models(sfreq).items():
+            score = model.fit(raw_train, y_train).score(raw_test, y_test)
             folds[name].append(float(score))
         print(f'Evaluated subjects {held}', flush=True)
 
@@ -111,7 +121,16 @@ def evaluate(root):
     finally:
         conn.close()
     metrics = {
-        'protocol': 'Five fixed subject-pair folds; complete-run normalization without labels',
+        'protocol': 'Five fixed subject-pair folds; no subject overlap within each fold',
+        'methods': {
+            'spectral_features': 'Complete-run normalization without labels',
+            'spatial_features': 'CSP and mutual information fitted only on training subjects',
+            'classifier': 'StandardScaler and logistic regression for all four methods',
+            'csp_components': 6, 'csp_absolute_ridge': 1e-6, 'csp_log_offset': 1e-8,
+            'fbcsp_bands_hz': [[8, 12], [12, 16], [16, 20], [20, 24], [24, 30]],
+            'fbcsp_components_per_band': 2, 'fbcsp_selected_features': 8,
+            'random_state': 0,
+        },
         'feature_window_seconds': [-1, 4],
         'fold_accuracy': folds,
         'deployment': {'training_subjects': list(TRAIN_SUBJECTS),

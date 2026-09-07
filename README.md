@@ -24,7 +24,8 @@ python -m eegmem evaluate
 batches. `train` uses subjects 1–4. `run` processes subjects 5–10 in subject/run
 order, writes reports, and records each batch once. Repeating `run` restores
 missing reports without duplicating memory. `evaluate` reproduces the metrics
-and figure using an independent model and an in-memory database.
+and figure using independent models and an in-memory database. It includes
+the C3/C4, all-channel, CSP and FBCSP comparisons.
 
 | Output | Location |
 | --- | --- |
@@ -70,6 +71,19 @@ named channels with a stable interpretation. Historical labels are predictions,
 not verified ground truth. Agreement can repeat a model error and does not
 validate a prediction.
 
+## Research rationale
+
+The project began with two C3/C4 spectral features and added all-channel
+features to test whether a broader representation produced more consistent
+results across subject groups. CSP and FBCSP provide explicit spatial-feature
+comparisons. Their results are retained even when they do not improve this pilot.
+
+Model selection and memory design answer different questions. The classifier
+predicts imagery labels; external memory makes earlier observations available
+for comparison, evidence accumulation and audit. Adding records does not change
+the classifier's parameters. Keeping the two separate allows a different model
+to be evaluated without redefining the stored C3/C4 reference features.
+
 ## Results
 
 The pilot contains 450 trials from ten subjects. The fixed split trains on 180
@@ -79,6 +93,8 @@ trials from subjects 1–4 and evaluates 270 trials from subjects 5–10.
 | --- | --- |
 | C3/C4 features, five subject-pair folds | 63.1% ± 7.6% |
 | All-channel features, same folds | 62.7% ± 3.2% |
+| CSP, same five folds | 53.3% ± 3.4% |
+| FBCSP, same five folds | 50.4% ± 8.0% |
 | All-channel model, fixed split | 64.4%, 174/270 |
 
 The five folds hold out pairs 1–2, 3–4, 5–6, 7–8 and 9–10 in turn. Reported spread
@@ -86,6 +102,13 @@ is the standard deviation across folds, not a confidence interval. The fixed
 split and five-fold results reuse this pilot dataset; they are not independent
 confirmation after model selection. Per-subject counts and exact fold scores
 are saved in [results/metrics.json](results/metrics.json).
+
+The all-channel baseline has a similar mean to C3/C4 and a smaller observed
+spread across these folds. It remains the assistant's classifier. The spatial
+baselines preserve the original custom implementation, including scale-dependent
+regularization; their scores support this pilot decision, not a general claim
+that CSP or FBCSP cannot transfer. See the [comparison protocol](experiments/README.md)
+for settings, training boundaries and limitations.
 
 ![Evaluation as records accumulate](figures/memory_growth.png)
 
@@ -133,7 +156,8 @@ python -m eegmem stats --database data/new_experiment.sqlite3
 
 | Module | Responsibility |
 | --- | --- |
-| `eegmem/pipeline.py` | Data preparation and isolated evaluation |
+| `eegmem/pipeline.py` | Data preparation and isolated four-method evaluation |
+| `experiments/spatial.py` | Reproducible CSP/FBCSP research baselines |
 | `eegmem/analyze.py` | Input validation, features, training and prediction |
 | `eegmem/compare.py` | Reference ranges and neighbor agreement |
 | `eegmem/memory.py` | Atomic persistence and model identity |

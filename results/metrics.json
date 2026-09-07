@@ -1,5 +1,38 @@
 {
-  "protocol": "Five fixed subject-pair folds; complete-run normalization without labels",
+  "protocol": "Five fixed subject-pair folds; no subject overlap within each fold",
+  "methods": {
+    "spectral_features": "Complete-run normalization without labels",
+    "spatial_features": "CSP and mutual information fitted only on training subjects",
+    "classifier": "StandardScaler and logistic regression for all four methods",
+    "csp_components": 6,
+    "csp_absolute_ridge": 1e-06,
+    "csp_log_offset": 1e-08,
+    "fbcsp_bands_hz": [
+      [
+        8,
+        12
+      ],
+      [
+        12,
+        16
+      ],
+      [
+        16,
+        20
+      ],
+      [
+        20,
+        24
+      ],
+      [
+        24,
+        30
+      ]
+    ],
+    "fbcsp_components_per_band": 2,
+    "fbcsp_selected_features": 8,
+    "random_state": 0
+  },
   "feature_window_seconds": [
     -1,
     4
@@ -18,6 +51,20 @@
       0.6444444444444445,
       0.6222222222222222,
       0.5888888888888889
+    ],
+    "CSP": [
+      0.5222222222222223,
+      0.5222222222222223,
+      0.6,
+      0.5111111111111111,
+      0.5111111111111111
+    ],
+    "FBCSP": [
+      0.6222222222222222,
+      0.37777777777777777,
+      0.5444444444444444,
+      0.4777777777777778,
+      0.5
     ]
   },
   "deployment": {
