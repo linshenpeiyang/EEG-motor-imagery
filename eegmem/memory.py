@@ -6,6 +6,8 @@ from pathlib import Path
 
 import numpy as np
 
+from eegmem.review import initialize_reviews
+
 
 def create_db(path, model_id=None):
     if str(path) != ":memory:":
@@ -33,6 +35,7 @@ def create_db(path, model_id=None):
             raise ValueError("Memory belongs to a different model; choose a new --database path")
         with conn:
             conn.execute("INSERT OR IGNORE INTO metadata VALUES ('model', ?)", (model_id,))
+    initialize_reviews(conn)
     return conn
 
 
@@ -48,7 +51,7 @@ def class_stats(rows, pred):
     return {"n": n, "mean": mean, "std": std}
 
 
-def save_batch(conn, name, digest, results, evidence):
+def save_batch(conn, name, digest, results, evidence, context=None):
     """Commit every trial and its report evidence together, or roll back all of them."""
     with conn:
         conn.execute("INSERT INTO batches VALUES (?, ?, ?, ?, ?)",
@@ -57,3 +60,5 @@ def save_batch(conn, name, digest, results, evidence):
         conn.executemany("INSERT INTO trials VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                          [(name, r["trial"], r["c3"], r["c4"], r["pred"], r["prob"],
                            r["label"], r["verdict"]) for r in results])
+        if context is not None:
+            conn.execute("INSERT INTO analysis_context VALUES (?, ?)", (name, json.dumps(context)))

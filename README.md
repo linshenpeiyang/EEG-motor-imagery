@@ -3,7 +3,8 @@
 A research prototype that classifies left- and right-hand motor imagery, compares
 new EEG batches with earlier predictions, and saves an evidence report. The
 classifier stays fixed after training. A separate SQLite database retains records
-across restarts.
+across restarts. A local review workbench adds searchable records, human
+corrections and an audit trail while preserving the original model output.
 
 ## Run the project
 
@@ -18,6 +19,7 @@ python -m eegmem train
 python -m eegmem run
 python -m eegmem stats
 python -m eegmem evaluate
+python -m eegmem workbench
 ```
 
 `prepare` downloads about 74 MB of EDF recordings on first use and creates 30
@@ -32,11 +34,43 @@ the C3/C4, all-channel, CSP and FBCSP comparisons.
 | Downloaded EDF files and prepared batches | `data/mne_data/`, `data/subjects/` |
 | Frozen model and feature metadata | `models/assistant.joblib` |
 | Persistent records and report evidence | `data/assistant.sqlite3` |
+| Local review copy and audit events | `data/workbench.sqlite3` |
 | Per-batch reports | `reports/assistant/` |
 | Reproducible evaluation | `results/metrics.json`, `figures/memory_growth.png` |
 
 Downloaded data, trained models and individual reports stay local. The aggregate
 evaluation and its figure are included in the repository.
+
+## Memory review workbench
+
+Open `http://127.0.0.1:8765` after starting `workbench`. Search by batch, reviewer
+or note, filter the review queue, and inspect three similar records from earlier
+batches. Review a label, exclude a record from future references, or reopen it.
+Each action requires a reviewer name and evidence or a reason. Original
+predictions and reports are preserved; every review remains in the audit log.
+
+On first startup, the workbench copies `data/assistant.sqlite3` to
+`data/workbench.sqlite3`. Later starts reuse that copy; it does not automatically
+import new records from the original database. This keeps the benchmark history
+separate from demonstrations. Analyze new batches into the workbench explicitly:
+
+```bash
+python -m eegmem run /path/to/new_run.npz --database data/workbench.sqlite3 --reference reviewed
+```
+
+`reviewed` uses only active human-reviewed labels. With no reviewed history, it
+reports a cold start instead of silently substituting predictions. The default
+`predicted` policy uses eligible model predictions plus human revisions. Both
+policies exclude records marked for exclusion. Each new batch stores its source
+record IDs, review versions and reference policy with the original evidence.
+Later reviews do not rewrite that snapshot. Reprocessing a recorded batch under
+a different policy is rejected.
+
+This is a local single-user prototype. Reviewer names are self-reported, not
+enterprise identities. Reviews affect memory references, not model parameters
+or benchmark labels. Stored append-only review events are application audit
+records, not tamper-proof storage. No large language model or company platform
+integration is claimed.
 
 ## How it works
 
@@ -163,6 +197,9 @@ python -m eegmem stats --database data/new_experiment.sqlite3
 | `eegmem/memory.py` | Atomic persistence and model identity |
 | `eegmem/report.py` | Reports from saved evidence |
 | `eegmem/app.py` | Command line workflow |
+| `eegmem/review.py` | Search, human review events and reference provenance |
+| `eegmem/workbench.py` | Local review server and isolated database copy |
+| `eegmem/web/` | Review interface |
 
 ```bash
 python -m unittest discover -s tests -v

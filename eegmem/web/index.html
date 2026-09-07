@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>EEG Memory Workbench</title><link rel="stylesheet" href="/style.css"></head>
+<body>
+<header><a class="brand" href="/">EEG<span> / MEMORY WORKBENCH</span></a><span class="local">LOCAL RESEARCH WORKSPACE</span></header>
+<main>
+<section class="intro"><div class="eyebrow">FROM PREDICTIONS TO TRACEABLE RECORDS</div><h1>Review the evidence.<br>Keep the history.</h1><p>Search earlier EEG observations, inspect similar records, and record a reason for each review. Original model predictions are preserved.</p><div class="context" id="context"></div></section>
+<section class="metrics" aria-label="Memory summary"><div><span>Recorded trials</span><strong id="total">—</strong></div><div><span>Needs review</span><strong id="queueCount">—</strong></div><div><span>Human-reviewed</span><strong id="reviewed">—</strong></div><div><span>Excluded references</span><strong id="excluded">—</strong></div></section>
+<div id="message" role="status" aria-live="polite"></div>
+<section class="workspace"><div class="list-panel"><div class="panel-heading"><h2>Memory records</h2><span id="resultCount"></span></div>
+<form id="filters"><label>Search batch, reviewer or note<input id="search" placeholder="e.g. S005R04" type="search"></label><div class="filter-row"><label>Status<select id="status"><option value="all">All records</option><option value="unreviewed">Unreviewed</option><option value="reviewed">Reviewed</option><option value="excluded">Excluded</option></select></label><label class="check"><input id="queue" type="checkbox"> Needs review only</label><button type="submit">Search</button></div></form>
+<div class="table-wrap"><table><thead><tr><th>Record</th><th>Prediction</th><th>Probability</th><th>Status</th></tr></thead><tbody id="rows"></tbody></table></div></div>
+<aside id="detail"><div class="empty"><span>01 / SELECT A RECORD</span><h2>A decision should have a trail.</h2><p>Select a trial to inspect its features, earlier neighbors and human review history.</p></div></aside></section>
+<footer>Research prototype. Probabilities are uncalibrated; historical agreement does not confirm a prediction. Reviewer names are self-reported in this local workspace. Benchmark labels are not used as human reviews.</footer>
+</main><script src="/app.js"></script>
+</body></html>

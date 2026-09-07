@@ -4,7 +4,7 @@ from pathlib import Path
 LABELS = ["Left-hand imagery", "Right-hand imagery"]
 
 
-def render_report(name, results, evidence):
+def render_report(name, results, evidence, context=None):
     lines = [f"# EEG batch {name}", "", "Research output only. No clinical diagnosis.", "",
              "Features are run-standardized C3/C4 log mean spectral power.",
              "Table z-scores compare features with historical predicted-class records. Model probabilities are uncalibrated.", "",
@@ -38,14 +38,19 @@ def render_report(name, results, evidence):
                 spread = "unavailable" if std is None else f"{std:.3f}"
                 lines.append(f"  {channel} mean {mean:.3f}, sample standard deviation {spread}.")
     lines.extend(["", "Historical agreement is not independent verification. A reference flag does not identify its cause.", ""])
+    if context is not None:
+        lines.extend(["## Reference provenance", "",
+                      f"Policy: {context['policy']}. Review event cutoff: {context['review_event_cutoff']}.",
+                      "Source IDs and review versions are stored with this batch in analysis_context.",
+                      f"Reference trials: {len(context['sources'])}. Later reviews do not rewrite this report.", ""])
     return "\n".join(lines)
 
 
-def write_report(directory, name, results, evidence):
+def write_report(directory, name, results, evidence, context=None):
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / f"{name}.md"
     temporary = path.with_suffix(".md.tmp")
-    temporary.write_text(render_report(name, results, evidence), encoding="utf-8")
+    temporary.write_text(render_report(name, results, evidence, context), encoding="utf-8")
     temporary.replace(path)
     return path
