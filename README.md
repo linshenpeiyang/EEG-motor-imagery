@@ -74,11 +74,31 @@ integration is claimed.
 
 ## How it works
 
-```text
-EEG run → spectral features → frozen classifier → historical comparison
-                                                     ↓
-                                           SQLite records → report
+### Final architecture
+
+```mermaid
+flowchart LR
+    A[PhysioNet EDF runs] --> B[prepare<br/>filter and epoch]
+    B --> C[Batch NPZ<br/>trials, channels, labels]
+    C --> D[Feature extraction<br/>8-30 Hz log power]
+    D --> E[Frozen classifier<br/>all-channel logistic regression]
+    D --> F[Memory features<br/>standardized C3/C4]
+    E --> G[Prediction<br/>state and probability]
+    F --> H[Historical comparison<br/>z-score and neighbors]
+    G --> H
+    H --> I[Atomic SQLite record<br/>original evidence snapshot]
+    I --> J[Markdown report]
+    I --> K[Review Workbench<br/>search, review, audit]
+    K -. reviewed reference policy .-> H
+    L[CSP/FBCSP baselines] -. isolated fold evaluation .-> M[Method comparison]
+    D -. spectral baselines .-> M
 ```
+
+The deployed path is the solid flow. CSP and FBCSP are research baselines in
+an isolated comparison path; running the comparison does not replace the
+deployed model or change the persistent memory. The classifier uses all-channel
+features for prediction. The memory layer keeps C3/C4 because those features
+have a stable, interpretable meaning across the historical records.
 
 1. **Prepare signals.** Use subjects 1–10 and imagery runs 4, 8 and 12 from the
    [PhysioNet EEG Motor Movement/Imagery Dataset](https://physionet.org/content/eegmmidb/1.0.0/).
@@ -117,6 +137,54 @@ predicts imagery labels; external memory makes earlier observations available
 for comparison, evidence accumulation and audit. Adding records does not change
 the classifier's parameters. Keeping the two separate allows a different model
 to be evaluated without redefining the stored C3/C4 reference features.
+
+### Method comparison
+
+| Method | Input representation | Role in the project | Five subject-pair folds | Decision |
+| --- | --- | --- | --- | --- |
+| C3/C4 spectral baseline | 2 run-standardized log-power features | Interpretable physiological baseline | 63.1% ± 7.6% | Retained for memory comparison |
+| All-channel spectral model | 64 run-standardized log-power features | Deployed classifier | 62.7% ± 3.2% | Selected for the assistant |
+| CSP | 6 spatial log-variance features | Spatial-feature baseline | 53.3% ± 3.4% | Retained as a documented comparison |
+| FBCSP | 5 bands × 2 CSP features, 8 selected | Multi-band spatial baseline | 50.4% ± 8.0% | Retained as a documented comparison |
+
+The scores are a controlled pilot comparison, not a universal ranking of EEG
+methods. Every fold holds out two subjects, and CSP filters plus FBCSP feature
+selection are fitted only on the training subjects. Full settings are in
+[`experiments/README.md`](experiments/README.md).
+
+### Three-minute demonstration
+
+Run this sequence from the repository root after installing the dependencies:
+
+```bash
+# 1. Prepare the cached PhysioNet runs and create 30 self-contained batches.
+python -m eegmem prepare
+
+# 2. Train the frozen model on subjects 1-4.
+python -m eegmem train
+
+# 3. Reproduce all four method comparisons and the 174/270 pilot result.
+python -m eegmem evaluate
+
+# 4. Analyze subjects 5-10, write reports and grow the persistent memory.
+python -m eegmem run
+python -m eegmem stats
+
+# 5. Open the local review workbench.
+python -m eegmem workbench
+```
+
+For the spoken walkthrough, show `results/metrics.json` after step 3, then open
+`figures/memory_growth.png`. Explain that the frozen model reaches 174/270 on
+the held-out deployment split, while the memory records those predictions and
+their historical reference evidence. In the browser, search for `S005R04`, open
+one trial and show its C3/C4 values, nearest earlier records and review history.
+If you record a review, enter a reviewer name and a reason; the original model
+prediction remains visible and the event is appended to the audit history.
+
+The demonstration shows a working research prototype. It does not claim a
+real-time decoder, a clinical tool, an enterprise deployment or a completed
+human-user study.
 
 ## Results
 
